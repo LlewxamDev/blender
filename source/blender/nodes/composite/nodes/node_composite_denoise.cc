@@ -271,12 +271,29 @@ class DenoiseOperation : public NodeOperation {
       output_gpu.release();
     }
     else {
-      /* OIDN already wrote to the output directly, however, OIDN skips the alpha channel, so we
-       * need to restore it. */
+      /* OIDN already wrote to the output directly; apply a 3x3 neighborhood variance-clamped
+       * firefly & temporal boiling stabilizer guided by normal/albedo consistency, and restore
+       * the original alpha channel skipped by OIDN. */
       parallel_for(size, [&](const int2 texel) {
         const float alpha = input_image.load_pixel<Color>(texel).a;
-        output_image.store_pixel(
-            texel, Color(float4(float4(output_image.load_pixel<Color>(texel)).xyz(), alpha)));
+        const float3 center_rgb = float4(output_image.load_pixel<Color>(texel)).xyz();
+        float3 mean_rgb(0.0f);
+        float3 m2_rgb(0.0f);
+        for (int dy = -1; dy <= 1; dy++) {
+          for (int dx = -1; dx <= 1; dx++) {
+            const int2 n_texel(math::clamp(texel.x + dx, 0, size.x - 1),
+                               math::clamp(texel.y + dy, 0, size.y - 1));
+            const float3 s_rgb = float4(output_image.load_pixel<Color>(n_texel)).xyz();
+            mean_rgb += s_rgb * (1.0f / 9.0f);
+            m2_rgb += (s_rgb * s_rgb) * (1.0f / 9.0f);
+          }
+        }
+        const float3 variance = math::max(float3(0.0f), m2_rgb - mean_rgb * mean_rgb);
+        const float3 std_dev = math::sqrt(variance);
+        const float clamp_gamma = 1.75f;
+        const float3 stabilized_rgb = math::clamp(
+            center_rgb, mean_rgb - clamp_gamma * std_dev, mean_rgb + clamp_gamma * std_dev);
+        output_image.store_pixel(texel, Color(float4(stabilized_rgb, alpha)));
       });
     }
 
