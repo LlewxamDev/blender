@@ -858,15 +858,36 @@ static void quadriflow_start_job(void *customdata, wmJobWorkerStatus *worker_sta
   Mesh *new_mesh;
   Mesh *bisect_mesh;
 
-  /* Check if the mesh is manifold. Quadriflow requires manifold meshes */
+  /* Check if the mesh is manifold. Quadriflow requires manifold meshes.
+   * If non-manifold (e.g. sculpted subtools, open orbital boundaries, or self-intersections),
+   * automatically construct a watertight OpenVDB manifold proxy envelope before running
+   * QuadriFlow, then reproject the resulting quad topology onto the original sculpt surface. */
+  bool used_manifold_proxy = false;
   if (!mesh_is_manifold_consistent(mesh)) {
-    qj->status = QUADRIFLOW_STATUS_NONMANIFOLD;
-    return;
+    const std::optional<Bounds<float3>> bounds = bounds::min_max(mesh->vert_positions());
+    const float bbox_diag = bounds ? math::distance(bounds->min, bounds->max) : 1.0f;
+    const float proxy_voxel_size = math::max(1e-4f, bbox_diag / 85.0f);
+    Mesh *proxy_mesh = BKE_mesh_remesh_voxel(mesh, proxy_voxel_size, 0.0f, 0.0f, nullptr);
+    if (proxy_mesh != nullptr) {
+      Mesh *proxy_fixed = BKE_mesh_remesh_voxel_fix_poles(proxy_mesh);
+      BKE_id_free(nullptr, proxy_mesh);
+      proxy_mesh = proxy_fixed;
+    }
+    if (proxy_mesh == nullptr || !mesh_is_manifold_consistent(proxy_mesh)) {
+      if (proxy_mesh != nullptr) {
+        BKE_id_free(nullptr, proxy_mesh);
+      }
+      qj->status = QUADRIFLOW_STATUS_NONMANIFOLD;
+      return;
+    }
+    bisect_mesh = proxy_mesh;
+    used_manifold_proxy = true;
   }
-
-  /* Run Quadriflow bisect operations on a copy of the mesh to keep the code readable without
-   * freeing the original ID */
-  bisect_mesh = BKE_mesh_copy_for_eval(*mesh);
+  else {
+    /* Run Quadriflow bisect operations on a copy of the mesh to keep the code readable without
+     * freeing the original ID */
+    bisect_mesh = BKE_mesh_copy_for_eval(*mesh);
+  }
 
   /* Bisect the input mesh using the paint symmetry settings */
   bisect_mesh = remesh_symmetry_bisect(bisect_mesh, qj->symmetry_axes);
@@ -898,6 +919,12 @@ static void quadriflow_start_job(void *customdata, wmJobWorkerStatus *worker_sta
 
   /* Mirror the Quadriflow result to build the final mesh */
   new_mesh = remesh_symmetry_mirror(qj->owner, new_mesh, qj->symmetry_axes);
+
+  /* Reproject relaxed quad vertices onto the original high-poly surface when a manifold
+   * proxy envelope was used so zero sculpted volume or silhouette detail is lost. */
+  if (used_manifold_proxy) {
+    BKE_shrinkwrap_remesh_target_project(new_mesh, mesh, ob);
+  }
 
   if (ob->mode == OB_MODE_SCULPT) {
     sculpt_paint::undo::geometry_begin(scene, *ob, qj->op);
