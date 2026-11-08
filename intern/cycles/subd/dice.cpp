@@ -82,9 +82,9 @@ float EdgeDice::scale_factor(const SubPatch &sub, const int Mu, const int Mv)
   const float A4 = quad_area(P[1][1], P[2][1], P[1][2], P[2][2]);
   const float Apatch = max(A1, max(A2, max(A3, A4))) * 4.0f;
 
-  /* solve for scaling factor */
-  const float Atri = params.dicing_rate * params.dicing_rate * 0.5f;
-  const float Ntris = Apatch / Atri;
+  /* solve for scaling factor with per-patch micropolygon budget guard to prevent OOM */
+  const float Atri = max(params.dicing_rate * params.dicing_rate * 0.5f, 1e-4f);
+  const float Ntris = min(Apatch / Atri, (float)max(params.max_patch_triangles, 1));
 
   // XXX does the -sqrt solution matter
   // XXX max(D, 0.0) is highly suspicious, need to test cases
@@ -138,8 +138,8 @@ void EdgeDice::set_triangle(const SubPatch &sub,
   }
   if (mesh_ptex_uv) {
     mesh_ptex_uv[triangle_index * 3 + 0] = uv0;
-    mesh_ptex_uv[triangle_index * 3 + 0] = uv1;
-    mesh_ptex_uv[triangle_index * 3 + 0] = uv2;
+    mesh_ptex_uv[triangle_index * 3 + 1] = uv1;
+    mesh_ptex_uv[triangle_index * 3 + 2] = uv2;
   }
 
   /* TODO: batch together multiple triangles. */
