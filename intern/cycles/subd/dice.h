@@ -30,6 +30,7 @@ struct SubdParams {
   int split_threshold = 1;
   float dicing_rate = 1.0f;
   int max_level = 12;
+  int max_patch_triangles = 65536;
   Camera *camera = nullptr;
   Transform objecttoworld = transform_identity();
 
